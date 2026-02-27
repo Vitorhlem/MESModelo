@@ -1,0 +1,91 @@
+version: '3.8'
+
+# ===========================================================================
+# 🚀 ÂNCORA BASE (DRY - Don't Repeat Yourself)
+# Compartilha configurações comuns entre Backend e Celery
+# ===========================================================================
+x-python-base: &python-base
+  build: ./src-py
+  restart: always
+  # 1. Lê todas as senhas, chaves e APIs do seu arquivo .env local
+  env_file: ./src-py/.env
+  volumes:
+    - ./src-py:/app
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  # 2. Sobrescreve apenas as rotas de rede para funcionar dentro do Docker!
+  environment:
+    POSTGRES_SERVER: db
+    DATABASE_URL: postgresql+asyncpg://postgres:Admin123@db:5432/Trucar
+    REDIS_URL: redis://redis:6379/0
+    CELERY_BROKER_URL: redis://redis:6379/0
+    CELERY_RESULT_BACKEND: redis://redis:6379/0
+    BACKEND_INTERNAL_URL: http://backend:8000
+
+services:
+  # -------------------------------------------------------------------------
+  # 1. BANCO DE DADOS (PostgreSQL)
+  # -------------------------------------------------------------------------
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Admin123
+      POSTGRES_DB: Trucar
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d Trucar"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------------------
+  # 2. REDIS (Cache e Filas)
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:alpine
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # -------------------------------------------------------------------------
+  # 3. BACKEND (API Python)
+  # -------------------------------------------------------------------------
+  backend:
+    <<: *python-base
+    command: sh -c "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8000:8000"
+
+  # -------------------------------------------------------------------------
+  # 4. WORKER (Tarefas de Fundo - Celery)
+  # -------------------------------------------------------------------------
+  celery_worker:
+    <<: *python-base
+    command: celery -A app.core.celery_app worker --loglevel=info
+
+  # -------------------------------------------------------------------------
+  # 5. FRONTEND (Vue/Quasar servido via Nginx)
+  # -------------------------------------------------------------------------
+  frontend:
+    build: ./src-client
+    restart: always
+    ports:
+      - "9000:80"  # Mapeia a porta 80 do Nginx para a 9000 do seu PC
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
